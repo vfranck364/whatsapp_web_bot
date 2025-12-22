@@ -1,3 +1,15 @@
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 8080;
+
+app.get('/', (req, res) => {
+  res.send('Le Bot LiverProtect est en ligne ! 🛡️');
+});
+
+app.listen(port, () => {
+  console.log(`Serveur de maintien en vie lancé sur le port ${port}`);
+});
+
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs');
