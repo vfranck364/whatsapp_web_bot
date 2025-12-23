@@ -50,6 +50,11 @@ else if (fs.existsSync(path.join(__dirname, 'credentials.json'))) {
   }
 }
 
+// Normaliser les retours à la ligne dans la clé privée si fournie via ENV ("\n")
+if (GOOGLE_SERVICE_ACCOUNT && GOOGLE_SERVICE_ACCOUNT.private_key && GOOGLE_SERVICE_ACCOUNT.private_key.includes('\\n')) {
+  GOOGLE_SERVICE_ACCOUNT.private_key = GOOGLE_SERVICE_ACCOUNT.private_key.replace(/\\n/g, '\n');
+}
+
 // ========== VÉRIFICATIONS PRÉ-LANCEMENT ==========
 if (!SPREADSHEET_ID) {
   console.error('❌ ERREUR: SPREADSHEET_ID manquant. Configurez votre .env ou Koyeb');
@@ -155,15 +160,15 @@ async function loadCampaignData() {
   try {
     console.log('📋 Lecture du Google Sheet...');
     
-    const auth = new JWT({
-      email: GOOGLE_SERVICE_ACCOUNT.client_email,
-      key: GOOGLE_SERVICE_ACCOUNT.private_key,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    // Utiliser la méthode recommandée par google-spreadsheet :
+    // créer l'objet puis appeler useServiceAccountAuth avec les credentials
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+    await doc.useServiceAccountAuth({
+      client_email: GOOGLE_SERVICE_ACCOUNT.client_email,
+      private_key: GOOGLE_SERVICE_ACCOUNT.private_key
     });
-    
-    const doc = new GoogleSpreadsheet(SPREADSHEET_ID, auth);
     await doc.loadInfo();
-    
+
     const sheet = doc.sheetsByIndex[0];
     const rows = await sheet.getRows();
     
