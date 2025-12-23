@@ -1,25 +1,21 @@
 {
   "name": "whatsapp-bot-liverprotect",
   "version": "2.0.0",
-  "description": "Bot WhatsApp avec synchronisation Google Sheets et Drive",
+  "description": "Bot WhatsApp avec synchronisation Google Sheets et Drive - Déploiement Koyeb",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js"
   },
   "dependencies": {
-    "axios": "^1.13.2",
-    "chokidar": "^3.5.3",
-    "dotenv": "^16.6.1",
-    "express": "^4.18.2",
-    "google-auth-library": "^9.15.1",
-    "google-spreadsheet": "^4.1.1",
-    "googleapis": "^131.0.0",
-    "node-cron": "^4.2.1",
-    "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.23.0",
     "puppeteer": "^21.0.0",
-    "dotenv": "^16.3.1"
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "google-spreadsheet": "^4.1.1",
+    "google-auth-library": "^9.15.1",
+    "googleapis": "^131.0.0",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
