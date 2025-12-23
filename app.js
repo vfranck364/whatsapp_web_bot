@@ -57,13 +57,20 @@ if (!fs.existsSync(TEMP_MEDIA_DIR)) {
 }
 
 // ========== INITIALISATION WHATSAPP ==========
+const puppeteerConfig = {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+};
+
+// En développement local (macOS), spécifier Chrome explicitement
+if (process.platform === 'darwin') {
+    puppeteerConfig.executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+}
+// Sur Koyeb/Linux, Puppeteer utilisera le Chrome/Chromium disponible automatiquement
+
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: {
-        executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
+    puppeteer: puppeteerConfig
 });
 
 client.on('qr', (qr) => {
