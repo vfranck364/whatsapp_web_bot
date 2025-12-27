@@ -1,71 +1,31 @@
-FROM node:18
+# Utiliser une image légère avec Node et Chrome déjà installés
+FROM ghcr.io/puppeteer/puppeteer:latest
 
-# Installer les dépendances nécessaires pour Chrome/Puppeteer sur Linux
-RUN apt-get update && apt-get install -y \
-    gconf-service \
-    libasound2 \
-    libatk1.0-0 \
-    libc6 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libexpat1 \
-    libfontconfig1 \
-    libgcc1 \
-    libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libstdc++6 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    ca-certificates \
-    fonts-liberation \
-    libappindicator1 \
-    libnss3 \
-    lsb-release \
-    xdg-utils \
-    wget \
-    ffmpeg \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+# Passer en utilisateur root pour installer d'éventuels packages supplémentaires
+USER root
+RUN apt-get update && apt-get install -y ffmpeg --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Installer Chrome manuellement pour être sûr
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
+# Créer le répertoire de l'application
 WORKDIR /usr/src/app
 
-# Copier uniquement package.json d'abord pour le cache
-COPY package*.json ./
+# Copier les fichiers de dépendances
+COPY --chown=pptruser:pptruser package*.json ./
 
-# Installer les dépendances
-RUN npm install
+# Installer les dépendances (Puppeteer ne téléchargera pas Chrome car il est déjà présent)
+RUN npm install --production
 
-# Copier le reste du code
-COPY . .
+# Copier le reste du code avec les bons droits
+COPY --chown=pptruser:pptruser . .
 
-# Définir les variables pour que Puppeteer utilise le Chrome installé
+# Définir les variables pour Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
+    NODE_ENV=production
 
+# Exposer le port pour le health check
 EXPOSE 8000
 
-CMD ["npm", "start"]
+# Lancer avec l'utilisateur sécurisé de l'image
+USER pptruser
+
+CMD ["node", "app.js"]
