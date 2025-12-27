@@ -22,6 +22,19 @@ app.get('/', (req, res) => {
   res.status(200).send('Bot Active ✅');
 });
 
+app.get('/health', (req, res) => {
+  const health = {
+    status: isReady ? 'healthy' : 'unhealthy',
+    whatsapp: isReady ? 'connected' : 'disconnected',
+    campaigns: campaignData.length,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    timezone: 'Europe/Paris'
+  };
+  const statusCode = isReady ? 200 : 503;
+  res.status(statusCode).json(health);
+});
+
 const server = app.listen(PORT, () => {
   console.log(`\n🟢 Serveur maintien en vie lancé sur le port ${PORT}`);
 });
@@ -29,7 +42,6 @@ const server = app.listen(PORT, () => {
 // ========== CHARGEMENT GOOGLE SERVICE ACCOUNT ==========
 let GOOGLE_SERVICE_ACCOUNT = null;
 
-// 1. Essayer de charger depuis la variable d'environnement GOOGLE_JSON_KEY (Koyeb)
 if (process.env.GOOGLE_JSON_KEY) {
   try {
     GOOGLE_SERVICE_ACCOUNT = JSON.parse(process.env.GOOGLE_JSON_KEY);
@@ -39,7 +51,6 @@ if (process.env.GOOGLE_JSON_KEY) {
     process.exit(1);
   }
 }
-// 2. Sinon, charger depuis credentials.json (développement local)
 else if (fs.existsSync(path.join(__dirname, 'credentials.json'))) {
   try {
     GOOGLE_SERVICE_ACCOUNT = JSON.parse(fs.readFileSync(path.join(__dirname, 'credentials.json'), 'utf8'));
@@ -50,12 +61,10 @@ else if (fs.existsSync(path.join(__dirname, 'credentials.json'))) {
   }
 }
 
-// Normaliser les retours à la ligne dans la clé privée si fournie via ENV ("\n")
 if (GOOGLE_SERVICE_ACCOUNT && GOOGLE_SERVICE_ACCOUNT.private_key && GOOGLE_SERVICE_ACCOUNT.private_key.includes('\\n')) {
   GOOGLE_SERVICE_ACCOUNT.private_key = GOOGLE_SERVICE_ACCOUNT.private_key.replace(/\\n/g, '\n');
 }
 
-// ========== VÉRIFICATIONS PRÉ-LANCEMENT ==========
 if (!SPREADSHEET_ID) {
   console.error('❌ ERREUR: SPREADSHEET_ID manquant. Configurez votre .env ou Koyeb');
   process.exit(1);
@@ -63,82 +72,61 @@ if (!SPREADSHEET_ID) {
 
 if (!GOOGLE_SERVICE_ACCOUNT) {
   console.error('❌ ERREUR: GOOGLE_SERVICE_ACCOUNT manquant.');
-  console.error('   Koyeb: Passez la variable GOOGLE_JSON_KEY');
-  console.error('   Local: Placez credentials.json dans le répertoire racine');
   process.exit(1);
 }
 
-// Créer dossier temporaire
 if (!fs.existsSync(TEMP_MEDIA_DIR)) {
   fs.mkdirSync(TEMP_MEDIA_DIR, { recursive: true });
 }
 
 // ========== INITIALISATION WHATSAPP ==========
 const puppeteerConfig = {
-  headless: true,
+  headless: 'new',
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-gpu', // Économiser RAM sur instance gratuite
-    '--disable-dev-shm-usage' // Éviter les problèmes mémoire
-  ]
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--disable-gpu',
+    '--disable-extensions'
+  ],
+  authTimeout: 60000,
 };
-
-// Sur macOS (développement), spécifier Chrome explicitement
-if (process.platform === 'darwin') {
-  puppeteerConfig.executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-}
-// Sur Linux (Koyeb), utiliser Chromium auto-détecté
 
 const client = new Client({
   authStrategy: new LocalAuth(),
-  puppeteer: puppeteerConfig
+  puppeteer: puppeteerConfig,
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+  },
 });
 
-// Variables de state
 let isReady = false;
 let campaignData = [];
-let sentMessages = {}; // Track messages envoyés par row pour éviter les doublons
-let isExecuting = false; // Flag pour éviter les exécutions concurrentes
-const SENT_MESSAGES_FILE = './sent_messages.json';
+let isExecuting = false;
+let launchTime = null;
 
-// Charger les messages déjà envoyés
-if (fs.existsSync(SENT_MESSAGES_FILE)) {
-  try {
-    sentMessages = JSON.parse(fs.readFileSync(SENT_MESSAGES_FILE, 'utf8'));
-    console.log('📨 Messages précédents chargés');
-  } catch (err) {
-    console.warn('⚠️  Impossible de charger les messages envoyés');
-  }
+// Définir l'heure actuelle comme heure de lancement à chaque démarrage
+function updateLaunchTime() {
+  const now = new Date();
+  const parisTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+  launchTime = `${String(parisTime.getHours()).padStart(2, '0')}:${String(parisTime.getMinutes()).padStart(2, '0')}`;
 }
+updateLaunchTime();
+console.log(`⏰ Bot lancé à: ${launchTime} (heure de Paris)`);
 
 // ========== UTILITAIRES ==========
 function parseSheetDate(dateStr) {
   if (!dateStr) return null;
-  
-  // Format ISO YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
-  
-  // Format DD/MM/YYYY
   const match = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (match) {
     const [, dd, mm, yyyy] = match;
     return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
   }
-  
-  return null;
-}
-
-function parseSheetTime(timeStr) {
-  if (!timeStr) return null;
-  
-  // Format HH:mm ou H:mm
-  const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
-  if (match) {
-    const [, hh, mm] = match;
-    return `${String(hh).padStart(2, '0')}:${mm}`;
-  }
-  
   return null;
 }
 
@@ -146,89 +134,104 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function validatePhoneNumber(numero) {
+  if (!numero) return null;
+  let cleanNum = String(numero).replace(/[^\d+]/g, '');
+  if (cleanNum.startsWith('00')) {
+    cleanNum = '+' + cleanNum.substring(2);
+  } else if (!cleanNum.startsWith('+')) {
+    if (cleanNum.length >= 10) cleanNum = '+' + cleanNum;
+  }
+  if (/^\+\d{8,15}$/.test(cleanNum)) return cleanNum;
+  if (/^0[1-9]\d{8}$/.test(cleanNum)) return '+33' + cleanNum.substring(1);
+  return null;
+}
+
 function getCurrentTimeStr() {
   const now = new Date();
-  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const parisTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+  return `${String(parisTime.getHours()).padStart(2, '0')}:${String(parisTime.getMinutes()).padStart(2, '0')}`;
 }
 
 function getTodayISO() {
-  return new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const parisDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+  const year = parisDate.getFullYear();
+  const month = String(parisDate.getMonth() + 1).padStart(2, '0');
+  const day = String(parisDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
-// ========== GOOGLE SHEETS API ==========
-async function loadCampaignData() {
+// ========== GOOGLE API HANDLERS ==========
+async function loadCampaignData(retryCount = 0) {
   try {
-    console.log('📋 Lecture du Google Sheet...');
-    
-    // Utiliser la méthode recommandée par google-spreadsheet :
-    // créer l'objet puis appeler useServiceAccountAuth avec les credentials
-    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
-    await doc.useServiceAccountAuth({
-      client_email: GOOGLE_SERVICE_ACCOUNT.client_email,
-      private_key: GOOGLE_SERVICE_ACCOUNT.private_key
+    const serviceAccountAuth = new JWT({
+      email: GOOGLE_SERVICE_ACCOUNT.client_email,
+      key: GOOGLE_SERVICE_ACCOUNT.private_key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
-    await doc.loadInfo();
 
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
+    await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
     const rows = await sheet.getRows();
-    
-    campaignData = rows
-      .map((row, index) => ({
+
+    campaignData = rows.map((row, index) => {
+      const date = row.get('Date');
+      return {
         rowIndex: index,
-        date: parseSheetDate(row.get('Date')),
-        heure: parseSheetTime(row.get('Heure')),
-        message: row.get('Message') || '',
-        mediaId: row.get('Media_ID') || '',
-        legende: row.get('Legende') || '',
-        statut: row.get('Statut') || '',
+        date: parseSheetDate(date),
+        heure: launchTime,
+        message: row.get('Message') || row.get('Message_Principal') || row.get('message') || '',
+        mediaId: row.get('Media_ID') || row.get('ID_Drive_Image') || row.get('ID_Drive_Video') || '',
+        legende: row.get('Legende') || row.get('Legende_Image') || row.get('Caption') || '',
+        statut: row.get('Statut') || row.get('Status') || '',
         googleRow: row
-      }))
-      .filter(c => c.date !== null && c.heure !== null);
-    
-    console.log(`✅ ${campaignData.length} campagne(s) chargée(s)`);
-    if (campaignData.length > 0) {
-      console.log(`   Dates/Heures: ${campaignData.map(c => `${c.date} ${c.heure}`).join(', ')}`);
-    }
+      };
+    }).filter(c => c.date !== null);
+
+    console.log(`✅ ${campaignData.length} campagne(s) chargée(s). Prochain envoi prévu à ${launchTime}`);
   } catch (err) {
     console.error('❌ Erreur Google Sheets:', err.message);
+    if (retryCount < 3) {
+      await sleep(5000 * (retryCount + 1));
+      return loadCampaignData(retryCount + 1);
+    }
   }
 }
 
-// ========== GOOGLE DRIVE API ==========
-async function downloadFileFromDrive(fileId, fileName) {
+async function downloadFileFromDrive(fileId, fileNameBase) {
   try {
     const auth = new JWT({
       email: GOOGLE_SERVICE_ACCOUNT.client_email,
       key: GOOGLE_SERVICE_ACCOUNT.private_key,
       scopes: ['https://www.googleapis.com/auth/drive']
     });
-
     const drive = google.drive({ version: 'v3', auth });
+    const fileMetadata = await drive.files.get({ fileId, fields: 'name, mimeType' });
+    const mimeType = fileMetadata.data.mimeType;
+    let extension = '';
+    if (mimeType.includes('image/jpeg')) extension = '.jpg';
+    else if (mimeType.includes('image/png')) extension = '.png';
+    else if (mimeType.includes('video/mp4')) extension = '.mp4';
+    else if (mimeType.includes('application/pdf')) extension = '.pdf';
+    else extension = path.extname(fileMetadata.data.name) || '';
+
+    const fileName = `${fileNameBase}${extension}`;
     const filePath = path.join(TEMP_MEDIA_DIR, fileName);
     const dest = fs.createWriteStream(filePath);
 
-    console.log(`      ⬇️  Téléchargement de ${fileName}...`);
-    
-    const res = await drive.files.get(
-      { fileId, alt: 'media' },
-      { responseType: 'stream' }
-    );
+    const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
 
     return new Promise((resolve, reject) => {
       res.data
         .on('end', () => {
-          try {
-            const stat = fs.statSync(filePath);
-            if (stat.size > MAX_WHATSAPP_BYTES) {
-              console.warn(`      ⚠️  Fichier trop lourd (${(stat.size / 1e6).toFixed(2)} MB > 15 MB). Ignoré.`);
-              fs.unlinkSync(filePath);
-              resolve(null);
-            } else {
-              console.log(`      ✅ Téléchargé (${(stat.size / 1e6).toFixed(2)} MB)`);
-              resolve(filePath);
-            }
-          } catch (err) {
-            reject(err);
+          const stat = fs.statSync(filePath);
+          if (stat.size > 15 * 1024 * 1024) {
+            fs.unlinkSync(filePath);
+            resolve(null);
+          } else {
+            resolve(filePath);
           }
         })
         .on('error', reject)
@@ -240,154 +243,116 @@ async function downloadFileFromDrive(fileId, fileName) {
   }
 }
 
-// ========== EXÉCUTION CAMPAGNE ==========
-async function executeCampaign(campaign) {
+// ========== SENDING LOGIC ==========
+async function sendCampaignToContact(contact, campaign) {
   try {
-    // Charger les contacts
-    let contacts = [];
-    if (fs.existsSync('./contacts.json')) {
-      contacts = JSON.parse(fs.readFileSync('./contacts.json', 'utf8'));
-    } else {
-      console.error('❌ Fichier contacts.json manquant');
-      return;
+    const validNumber = validatePhoneNumber(contact.numero);
+    if (!validNumber) return false;
+
+    const chatId = validNumber.replace('+', '') + '@c.us';
+    const recipientName = contact.nom || 'Partenaire';
+
+    console.log(`\n   📤 [CAMPAIGNE ${campaign.rowIndex + 1}] Vers ${recipientName} (${validNumber})`);
+
+    // Texte
+    if (campaign.message.trim()) {
+      const personalizedMsg = campaign.message.replace(/\$\{recipientName\}/g, recipientName);
+      await client.sendMessage(chatId, personalizedMsg);
+      console.log(`      ✅ Message texte envoyé`);
+      await sleep(1000);
     }
 
-    if (contacts.length === 0) {
-      console.warn('⚠️  Aucun contact trouvé');
-      return;
-    }
-
-    console.log(`📦 ${contacts.length} contact(s) trouvé(s)`);
-    console.log(`📝 Message: ${campaign.message.substring(0, 50)}...`);
-    
-    let successCount = 0;
-    let errorCount = 0;
-    
-    for (const contact of contacts) {
-      try {
-        const chatId = contact.numero.includes('@') ? contact.numero : `${contact.numero}@c.us`;
-        const recipientName = contact.nom || 'Partenaire';
-        
-        console.log(`\n   📤 ${recipientName}`);
-
-        // Envoyer le message texte
-        if (campaign.message.trim()) {
-          const personalizedMsg = campaign.message.replace(/\$\{recipientName\}/g, recipientName);
-          await client.sendMessage(chatId, personalizedMsg);
-          console.log(`      ✅ Message texte envoyé`);
-          await sleep(1000);
+    // Média
+    if (campaign.mediaId.trim()) {
+      const mediaPath = await downloadFileFromDrive(campaign.mediaId, `media_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+      if (mediaPath && fs.existsSync(mediaPath)) {
+        try {
+          const media = MessageMedia.fromFilePath(mediaPath);
+          const personalizedCaption = campaign.legende.replace(/\$\{recipientName\}/g, recipientName);
+          await client.sendMessage(chatId, media, { caption: personalizedCaption });
+          console.log(`      ✅ Média envoyé`);
+          await sleep(2000);
+        } finally {
+          if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath);
         }
-
-        // Envoyer le média
-        if (campaign.mediaId.trim()) {
-          const mediaPath = await downloadFileFromDrive(
-            campaign.mediaId,
-            `media_${Date.now()}_${Math.random().toString(36).substring(7)}`
-          );
-          
-          if (mediaPath && fs.existsSync(mediaPath)) {
-            try {
-              const media = MessageMedia.fromFilePath(mediaPath);
-              const personalizedCaption = campaign.legende.replace(/\$\{recipientName\}/g, recipientName);
-              await client.sendMessage(chatId, media, { caption: personalizedCaption });
-              console.log(`      ✅ Média envoyé`);
-              await sleep(2000);
-            } finally {
-              if (fs.existsSync(mediaPath)) {
-                fs.unlinkSync(mediaPath);
-              }
-            }
-          }
-        }
-
-        successCount++;
-        
-        // Pause aléatoire entre 45-90 secondes
-        const randomWait = Math.floor(Math.random() * 45000) + 45000;
-        console.log(`      ⏳ Pause ${(randomWait / 1000).toFixed(0)}s`);
-        await sleep(randomWait);
-
-      } catch (err) {
-        errorCount++;
-        console.error(`      ❌ Erreur: ${err.message}`);
       }
     }
-
-    // Marquer la campagne comme "ENVOYÉ" dans Google Sheets
-    try {
-      campaign.googleRow.set('Statut', 'ENVOYÉ');
-      await campaign.googleRow.save();
-      console.log(`\n   ✅ Statut mis à jour dans Google Sheets`);
-    } catch (err) {
-      console.warn(`   ⚠️  Impossible de mettre à jour le statut: ${err.message}`);
-    }
-
-    const timestamp = new Date().toLocaleTimeString('fr-FR');
-    console.log(`\n✅ Campagne terminée [${timestamp}] - ${successCount}/${contacts.length} réussis, ${errorCount} erreurs`);
-    
+    return true;
   } catch (err) {
-    console.error('❌ Erreur exécution campagne:', err.message);
+    console.error(`      ❌ Erreur: ${err.message}`);
+    return false;
   }
 }
 
-// ========== BOUCLE DE VÉRIFICATION ==========
 async function checkAndExecuteCampaign() {
-  if (!isReady || campaignData.length === 0) {
-    return;
-  }
+  if (!isReady || campaignData.length === 0 || isExecuting) return;
 
   const today = getTodayISO();
-  const now = getCurrentTimeStr();
-
-  // Toujours vérifier les campagnes du jour
-  const campaignsDue = campaignData.filter(
-    c => c.date === today && c.heure === now && c.statut !== 'ENVOYÉ'
-  );
-
-  if (isExecuting) {
-    console.log(`⏳ Exécution en cours... [${campaignsDue.length} campagne(s) en attente]`);
-    return;
-  }
+  const campaignsDue = campaignData.filter(c => c.date === today && c.statut !== 'ENVOYÉ');
 
   if (campaignsDue.length > 0) {
     isExecuting = true;
-    console.log(`\n🚀 [${now}] ${campaignsDue.length} CAMPAGNE(S) À ENVOYER - Démarrage...\n`);
-    
-    for (const campaign of campaignsDue) {
-      await executeCampaign(campaign);
-      // Recharger les données pour prendre en compte le nouvel statut
-      await loadCampaignData();
+    console.log(`\n🚀 [${getCurrentTimeStr()}] ${campaignsDue.length} CAMPAGNE(S) DÉTECTÉE(S) - Démarrage de l'envoi...\n`);
+
+    let contacts = [];
+    try {
+      if (fs.existsSync('./contacts.json')) {
+        let rawData = fs.readFileSync('./contacts.json', 'utf8');
+        rawData = rawData.replace(/}\s*[\r\n]+\s*{/g, '},{').replace(/}\s*{/g, '},{');
+        contacts = JSON.parse(rawData);
+      }
+    } catch (err) {
+      console.error('❌ Erreur contacts:', err.message);
+      isExecuting = false;
+      return;
     }
-    
+
+    if (contacts.length > 0) {
+      for (const contact of contacts) {
+        console.log(`\n👤 Contact: ${contact.nom || 'Sans nom'} (${contact.numero})`);
+        for (const campaign of campaignsDue) {
+          await sendCampaignToContact(contact, campaign);
+        }
+        const wait = Math.floor(Math.random() * 45000) + 45000;
+        console.log(`   ⏳ Pause ${(wait / 1000).toFixed(0)}s...`);
+        await sleep(wait);
+      }
+
+      for (const campaign of campaignsDue) {
+        try {
+          campaign.googleRow.set('Statut', 'ENVOYÉ');
+          await campaign.googleRow.save();
+        } catch (e) {
+          console.warn(`   ⚠️ Erreur status update: ${e.message}`);
+        }
+      }
+    }
     isExecuting = false;
+    console.log(`\n✅ Session d'envoi terminée.\n`);
   }
 }
 
-// ========== PLANIFICATION ==========
-console.log('\n⏰ Mode Production: Vérification toutes les 60 secondes');
-console.log('   Les campagnes s\'exécutent au moment spécifié dans Google Sheets\n');
-
-setInterval(checkAndExecuteCampaign, CHECK_INTERVAL);
-
-// Recharger les données toutes les minutes
-setInterval(() => {
-  loadCampaignData();
-}, 60000);
-
-// ========== NETTOYAGE À LA FERMETURE ==========
-process.on('SIGINT', () => {
-  console.log('\n🛑 Arrêt du bot...');
-  if (fs.existsSync(TEMP_MEDIA_DIR)) {
-    fs.rmSync(TEMP_MEDIA_DIR, { recursive: true });
-  }
-  server.close(() => {
-    console.log('✅ Serveur fermé');
-    process.exit(0);
-  });
+// ========== EVENTS ==========
+client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
+client.on('ready', async () => {
+  console.log('✅ WhatsApp prêt!');
+  isReady = true;
+  await loadCampaignData();
+  await checkAndExecuteCampaign();
+  setInterval(async () => {
+    if (isReady && !isExecuting) {
+      await loadCampaignData();
+      await checkAndExecuteCampaign();
+    }
+  }, CHECK_INTERVAL);
 });
 
-// ========== DÉMARRAGE ==========
-console.log('🚀 Initialisation WhatsApp...\n');
+client.on('disconnected', () => { isReady = false; });
+
+console.log('🚀 Initialisation...');
 client.initialize();
 
-
+process.on('SIGINT', () => {
+  if (fs.existsSync(TEMP_MEDIA_DIR)) fs.rmSync(TEMP_MEDIA_DIR, { recursive: true });
+  process.exit(0);
+});
